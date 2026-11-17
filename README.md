@@ -12,8 +12,6 @@ MiniRTOS-Monitor 是基于 **[MiniRTOS 自研实时操作系统](https://github.
 
 项目计划实现运动状态实时采集、数据处理与显示、故障事件持久化、串口监控，以及任务健康检测和异常恢复。重点不只在于功能实现，还在于利用真实多任务应用检验 MiniRTOS 的调度、队列、互斥、通知和超时机制。
 
-> **当前进度（2026-11）**：仓库目前处于工程初始化阶段，已包含 STM32CubeMX 配置、Core、Drivers 和 Keil 工程目录。**MPU6050 / OLED / W25Q64 的驱动、应用任务与 MiniRTOS 内核尚未在当前仓库公开实现**；下面的应用架构和功能均为拟定开发目标，不代表已经完成。
-
 ## 硬件平台
 
 | 设备 | 作用 | 计划接口 |
@@ -25,7 +23,6 @@ MiniRTOS-Monitor 是基于 **[MiniRTOS 自研实时操作系统](https://github.
 | UART | 调试、运行统计及故障信息上报 | USART1 |
 | SWD | 程序下载与调试 | SWD |
 
-当前提交的 `.ioc` 可确认 STM32F103C8Tx、72 MHz 系统时钟、USART1 和 TIM4 HAL 时间基准配置；**I2C1 / SPI1 目前尚未启用**。具体 GPIO 引脚、器件地址、片选和板上引脚复用关系，待结合实际板卡连线核对后固定在硬件配置文档中。
 
 ## 目标系统架构
 
@@ -55,8 +52,6 @@ MPU6050 ──I2C──> Sensor Task ──采样队列──> Process Task
 | Display Task | 1 | OLED 显示状态 | 100–200 ms |
 | Logger Task | 1 | 故障事件写入 Flash | 等待日志队列 |
 | Idle Task | 0 | 系统空闲任务 | 始终就绪 |
-
-任务优先级和周期均为**初始设计值**，后续根据 CPU 占用、采样抖动、I²C 传输时间和内存消耗进行调整。MPU6050 与 OLED 计划共享 I²C，总线访问需互斥，并控制整屏刷新对高优先级采样任务造成的影响。
 
 ## 计划实现的功能
 
@@ -99,7 +94,7 @@ MiniRTOS-Monitor/
 git clone https://github.com/JKlovin/MiniRTOS-Monitor.git
 ```
 
-在 STM32CubeMX 中打开 `MiniRTOS-Monitor.ioc`，或在 Keil MDK-ARM 中打开 `MDK-ARM/` 下的工程。目前仓库用于基础工程配置与后续外设移植，**尚不能直接运行完整监测系统**。请在每一阶段完成后更新对应构建步骤和运行截图。
+在 STM32CubeMX 中打开 `MiniRTOS-Monitor.ioc`，或在 Keil MDK-ARM 中打开 `MDK-ARM/` 下的工程。目前仓库用于基础工程配置与后续外设移植。请在每一阶段完成后更新对应构建步骤和运行截图。
 
 ## 与 MiniRTOS 内核仓库的协同
 

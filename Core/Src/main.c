@@ -19,11 +19,23 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+
+#include "monitor.h"
+#include "oled.h"
+#include "mpu6050.h"
+#include "sensor_data.h"
+
+#include "minirtos.h"
+#include "minirtos_event.h"
+#include "minirtos_queue.h"
+#include "minirtos_task.h"
 
 /* USER CODE END Includes */
 
@@ -44,6 +56,11 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+MiniMutex_t I2C_Mutex;
+MiniQueue_t SensorQueue;
+
+
+
 
 /* USER CODE END PV */
 
@@ -87,8 +104,68 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+OLED_Init();
 
+if (MPU6050_Init(&hi2c1) != HAL_OK)
+{
+    printf("MPU6050 Init Failed!\r\n");
+    Error_Handler();
+}
+
+printf("OLED / MPU6050 Init OK!\r\n");
+
+MiniRTOS_Init();
+
+Mutex_Init(&I2C_Mutex);
+
+/* 每个元素为一个完整的 SensorPacket_t */
+if (Queue_Init(&SensorQueue,10U,sizeof(SensorPacket_t)) == 0U)
+{
+    printf("Sensor Queue Init Failed!\r\n");
+    Error_Handler();
+}
+
+/* 创建任务 */
+MiniCreateTask(Sensor_Handle,  "Sensor",  256, 3);
+MiniCreateTask(Process_Handle, "Process", 256, 2);
+MiniCreateTask(OLED_Handle,    "OLED",    256, 1);
+
+Task_StartScheduler();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+//	OLED_Init();
+//	MPU6050_Init(&hi2c1);
+//	
+//	printf("------------------------------------\r\n");
+//	printf("MiniRTOS Init ......\r\n");
+//	printf("------------------------------------\r\n");
+//	
+//	MiniRTOS_Init();
+//	
+//	Mutex_Init(&I2C_Mutex);
+
+//	MiniCreateTask(LED_Handle, "LED_task" ,256, 1 );
+//	MiniCreateTask(OLED_Handle, "OLED_task" ,256, 2 );
+//	MiniCreateTask(Sensor_Handle, "Sensor", 256, 3);
+//	
+//	Task_StartScheduler();
+	
   /* USER CODE END 2 */
 
   /* Infinite loop */
