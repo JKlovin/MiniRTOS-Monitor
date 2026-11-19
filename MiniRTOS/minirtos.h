@@ -3,16 +3,33 @@
 
 #include <stdint.h>
 
+
+/* 无限等待标识 */
+#define MINIRTOS_WAIT_FOREVER UINT32_MAX
+
+
 typedef void (*TaskFunction_t)(void *arg);
 typedef struct List List_t;
+typedef struct MiniMutex MiniMutex_t;
 
-/* 函数返回状态 */
+
+/* 任务通知状态机 */
 typedef enum
 {
   Notify_Idle		= 0x00U,
   Notify_Wait		= 0x01U,
   Notify_Ready	= 0x02U
 } Notify_Status;
+
+/* 函数状态返回值 */
+typedef enum
+{
+    MiniRTOS_OK = 0U,
+    MiniRTOS_Timeout,
+    MiniRTOS_Error,
+    MiniRTOS_Invalid
+} MiniRTOS_State;
+
 
 /* 列表项结构体 */
 typedef struct List_item
@@ -69,11 +86,23 @@ typedef struct MiniTCB
 	/* 任务状态列表项 	*/
 	ListItem_t StateListItem;
 	
+	/* 事件状态列表项	*/
+	ListItem_t EventListItem;
+	
 	/* 任务通知值 			*/
 	uint32_t 				NotifyValue;
 	
 	/* 任务通知状态 		*/
 	Notify_Status		NotifyState	;
+	
+	/* 当前任务正在等待的互斥锁 */
+	MiniMutex_t *pxWaitingMutex;
+
+	/* 当前任务持有的互斥锁链表 */
+	MiniMutex_t *pxHeldMutexList;
+	
+	/* 当前事件等待的原始进入顺序 */
+	uint64_t uxEventWaitOrder;
 
 } MiniTCB_t;
 
@@ -85,6 +114,12 @@ typedef struct MiniMutex
 
 	/* 互斥锁等待列表 */
 	List_t WaitList;
+	
+	/* 等待者的最高有效优先级 */
+	uint32_t uxHighestWaitPriority;
+	
+	/* 同一任务持有的下一把互斥锁 */
+	struct MiniMutex *pxNextHeldMutex;
 
 } MiniMutex_t;
 

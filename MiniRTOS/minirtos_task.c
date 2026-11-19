@@ -1,12 +1,11 @@
 #include "minirtos_task.h"
+#include "minirtos_event.h"
+
 #include "main.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
-
-#define UXPRIORITY_MAX 5
-#define MIN_STACK_SIZE 32
 
 /* 系统定义项 */
 volatile uint32_t MiniRTOS_Running 	= 0;
@@ -26,7 +25,6 @@ List_t Notify_WaitList	;
 static volatile uint32_t uxCritical_Count	= 0;
 static volatile uint32_t uxSavedPrimask		= 0;
 static void TaskInit_LRerror(void);
-static void Task_AddWaitList(MiniTCB_t *TCB, uint32_t delay_time);
 static void IDLE_Handle(void *arg);
 
 /* 系统初始化函数 */
@@ -72,26 +70,17 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 	uint32_t *pxStack;
 	static int IDLE_Flag = 0;
 
+	/* 参数检查 */
+	if ((pxTaskCode == NULL) || (uxStackDepth < MIN_STACK_SIZE) ||
+			(uxPriority >= UXPRIORITY_MAX))
+	{
+			return NULL;
+	}
+	
 	/* 创建TCB，申请TCB内存空间 */
 	TCB = (MiniTCB_t *)malloc(sizeof(MiniTCB_t));
 	if (TCB != NULL)
 	{
-		/* 任务函数指针检查 */
-		if (pxTaskCode == NULL)
-		{
-				printf("%s Task Code error\r\n", pcName);
-
-				return NULL;
-		}
-		
-		/* 任务栈深度检查 */
-		if (uxStackDepth < MIN_STACK_SIZE)
-		{
-				printf("%s Task StackDepth error\r\n", pcName);
-
-				return NULL;
-		}
-		
 		/* 创建任务堆栈，申请堆栈内存空间 */
 		pxStack = (uint32_t *)malloc(sizeof(uint32_t) * uxStackDepth);
 		if (pxStack != NULL)
@@ -149,15 +138,6 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 			*(TCB->pxTopOfStack) = 0; // R4
 
 			/* 设置任务优先级 */
-			if (uxPriority >= UXPRIORITY_MAX)
-			{
-				printf("%s Task Priority error\r\n", pcName);
-
-				free(TCB);
-				free(pxStack);
-				return NULL;
-			}
-
 			TCB->uxInitPriority = uxPriority;
 			TCB->uxPriority = uxPriority;
 
@@ -172,11 +152,24 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 				TCB->pcName[0] = '\0';
 			}
 
+			/* 初始化事件列表项 */
+			TCB->EventListItem.pxValue = uxPriority;
+			TCB->EventListItem.pxOwner = TCB;
+
+			TCB->EventListItem.pxContainer = NULL;
+			TCB->EventListItem.pxNext = NULL;
+			TCB->EventListItem.pxPrevious = NULL;
+			
+			/* 初始化互斥锁关系 */
+			TCB->pxWaitingMutex = NULL;
+			TCB->pxHeldMutexList = NULL;
+			TCB->uxEventWaitOrder = 0ULL;
+
 			/* 加入就绪列表 */
 			Task_AddReadyList(TCB);
 
 			/* 任务通知值初始化 */
-			TCB->NotifyValue = NULL;
+			TCB->NotifyValue = 0U;
 			TCB->NotifyState = Notify_Idle;
 
 			printf("%s Task Init sucess\r\n", pcName);
@@ -234,8 +227,19 @@ void MiniRTOS_WakeUntil(uint32_t Systick_Now)
 		/* 先保存待唤醒任务的 TCB */
 		TCB = (MiniTCB_t *)Index->pxOwner;
 
-		/* 从阻塞链表中移除 */
-		List_ItemRemove(TCB);
+		/* 判断是否正在等待互斥锁 */
+		if (TCB->pxWaitingMutex != NULL)
+		{
+				Mutex_OnWaiterTimeout(TCB);
+		}
+		/* 其他普通事件超时 */
+		else if (TCB->EventListItem.pxContainer != NULL)
+		{
+				List_RemoveNode(&TCB->EventListItem);
+		}
+		
+		/* 从延时链表删除 */
+		List_RemoveNode(&TCB->StateListItem);
 
 		/* 加入就绪链表 */
 		Task_AddReadyList(TCB);
@@ -287,11 +291,10 @@ void Task_StartScheduler(void)
 	System_Tick = 0;
 
 	Get_CurrentTCB();
+	
 	/* 开启第一个任务 */
 	StartFirstTask();
 }
-
-
 
 /* 任务初始化任务栈时，LR异常返回函数 */
 static void TaskInit_LRerror(void)
@@ -343,40 +346,15 @@ void Get_CurrentTCB(void)
 	}
 }
 
-/* 将任务体移除当前链表 */
-void List_ItemRemove(MiniTCB_t *TCB)
-{
-	ListItem_t *Index;
-	List_t *List;
-
-	/* 获取当前任务对应的链表节点 */
-	Index = &TCB->StateListItem;
-
-	/* 获取节点所属的链表 */
-	List = Index->pxContainer;
-
-	/* 如果 Index 正好指向待删除节点 */
-	if (List->xIndex == Index)
-	{
-		List->xIndex = Index->pxNext;
-	}
-
-	/* 双向链表节点删除 */
-	Index->pxPrevious->pxNext = Index->pxNext;
-	Index->pxNext->pxPrevious = Index->pxPrevious;
-
-	/* 链表节点数量减一 */
-	List->NumberOfItems--;
-
-	/* 清除节点原有的链表关系 */
-	Index->pxNext = NULL;
-	Index->pxPrevious = NULL;
-	Index->pxContainer = NULL;
-}
-
 /* RTOS系统延时函数 */
 void MiniRTOS_delay(uint32_t delay_time)
 {
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+    (__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
+	{
+			return;
+	}
+	
 	/* 如果延时时间为0，立刻请求任务调度 */
 	if (delay_time == 0U)
 	{
@@ -388,7 +366,7 @@ void MiniRTOS_delay(uint32_t delay_time)
 	Mini_EnterCritical();
 
 	/* 从就绪链表删除 */
-	List_ItemRemove(CurrentTCB);
+	List_RemoveNode(&CurrentTCB->StateListItem);
 
 	/* 加入阻塞链表 */
 	Task_AddWaitList(CurrentTCB, delay_time);
@@ -452,7 +430,7 @@ uint8_t MiniRTOS_DelayUntil(uint32_t *PreviousWakeupTime,uint32_t Delay_Time)
   WakeupTime = Delay_Time - ElapsedTick;
 		
 	/* 当前任务移出就绪链表 */
-	List_ItemRemove(CurrentTCB);
+	List_RemoveNode(&CurrentTCB->StateListItem);
 	
 	/* 加入延时阻塞链表 */
 	Task_AddWaitList(CurrentTCB,WakeupTime);
@@ -469,7 +447,7 @@ uint8_t MiniRTOS_DelayUntil(uint32_t *PreviousWakeupTime,uint32_t Delay_Time)
 }
 
 /* 添加延时链表 */
-static void Task_AddWaitList(MiniTCB_t *TCB, uint32_t delay_time)
+void Task_AddWaitList(MiniTCB_t *TCB, uint32_t delay_time)
 {
 	ListItem_t *Index;
 	ListItem_t *NewItem;
@@ -544,6 +522,11 @@ void Mini_EnterCritical(void)
 /* 退出临界区 */
 void Mini_ExitCritical(void)
 {
+	if (uxCritical_Count == 0U)
+	{
+			return;
+	}
+	
 	/* 临界区计数减一 */
 	if (uxCritical_Count > 0)
 	{
@@ -559,22 +542,40 @@ void Mini_ExitCritical(void)
 	}
 }
 
-void MiniRTOS_TickHandler(void)
+/* 将任务体移除当前链表 */
+void List_RemoveNode(ListItem_t *Item)
 {
-	System_Tick++;
+	List_t *List;
 
-	/* 检测系统 Tick 溢出,交换链表指针 */
-	if(System_Tick == 0)
+	if (Item == NULL)
 	{
-		List_t *Temp = CurrentWaitList;
-		CurrentWaitList = OverflowWaitList;
-		OverflowWaitList = Temp;
+			return;
 	}
 
-	if(MiniRTOS_Running == 1)
+	/* 获取节点所属的链表 */
+	List = Item->pxContainer;
+	
+	if (List == NULL)
 	{
-		/* 设置 PendSV 挂起标志位,请求任务上下文切换 */
-		SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+			return;
 	}
+
+	/* 如果 Index 正好指向待删除节点 */
+	if (List->xIndex == Item)
+	{
+		List->xIndex = Item->pxNext;
+	}
+
+	/* 双向链表节点删除 */
+	Item->pxPrevious->pxNext = Item->pxNext;
+	Item->pxNext->pxPrevious = Item->pxPrevious;
+
+	/* 链表节点数量减一 */
+	List->NumberOfItems--;
+
+	/* 清除节点原有的链表关系 */
+	Item->pxNext = NULL;
+	Item->pxPrevious = NULL;
+	Item->pxContainer = NULL;
 }
 
