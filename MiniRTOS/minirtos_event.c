@@ -30,7 +30,7 @@ void Mutex_Init(MiniMutex_t *Mutex)
 
 	/* 互斥锁链表下一个为空 */
 	Mutex->pxNextHeldMutex = NULL;
-	
+
 	/* 初始化互斥锁最高优先级 */
 	Mutex->uxHighestWaitPriority = 0U;
 
@@ -52,7 +52,7 @@ void SemaphoreSignal_Init(MiniSemaphore_t *Task_SemaphoreSignal, uint16_t uxMaxC
 }
 
 /* 带优先级、先后的列表插入 */
-static void Mini_EventInsertPriority(List_t *EventList,MiniTCB_t *TCB)
+static void Mini_EventInsertPriority(List_t *EventList, MiniTCB_t *TCB)
 {
 	ListItem_t *NewItem;
 	ListItem_t *Index;
@@ -235,7 +235,7 @@ static uint8_t Mutex_WouldDeadlock(MiniTCB_t *Waiter, MiniMutex_t *Mutex)
 {
 	MiniTCB_t *owner;
 	uint32_t depth;
-	
+
 	owner = Mutex->Owner;
 
 	for (depth = 0U; (owner != NULL) && (depth < MINIRTOS_MUTEX_CHAIN_MAX); depth++)
@@ -348,18 +348,18 @@ void Mutex_OnWaiterTimeout(MiniTCB_t *TCB)
 
 	/* 获取当前任务正在等待的互斥锁 */
 	mutex = TCB->pxWaitingMutex;
-	
+
 	/* 移除 */
 	if (TCB->EventListItem.pxContainer == &mutex->WaitList)
 	{
 		List_RemoveNode(&TCB->EventListItem);
 	}
-	
+
 	TCB->pxWaitingMutex = NULL;
 
 	/* 更新互斥锁最高优先级 */
 	Mutex_RefreshHighest(mutex);
-	
+
 	/* 更新链式互斥锁优先级 */
 	if (mutex->Owner != NULL)
 	{
@@ -425,7 +425,7 @@ MiniRTOS_State Mutex_TakeTimeout(MiniMutex_t *Mutex, uint32_t WaitTicks)
 	/* 允许等待 */
 	/* 设置当前任务等待该互斥锁 */
 	CurrentTCB->pxWaitingMutex = Mutex;
-	
+
 	/* 进入互斥阻塞链表 */
 	Mini_EventBlock(&Mutex->WaitList);
 
@@ -440,7 +440,7 @@ MiniRTOS_State Mutex_TakeTimeout(MiniMutex_t *Mutex, uint32_t WaitTicks)
 
 	/* 更新当前互斥锁所有者优先级 */
 	Mutex_RecomputeChain(Mutex->Owner);
-	
+
 	/* 退出临界区 */
 	Mini_ExitCritical();
 
@@ -530,7 +530,7 @@ MiniRTOS_State Mutex_Release(MiniMutex_t *Mutex)
 /* 无限阻塞获取 */
 uint8_t Mutex_Take(MiniMutex_t *Mutex)
 {
-	return (Mutex_TakeTimeout(Mutex, MINIRTOS_WAIT_FOREVER) ==MiniRTOS_OK)? 1U: 0U;
+	return (Mutex_TakeTimeout(Mutex, MINIRTOS_WAIT_FOREVER) == MiniRTOS_OK) ? 1U : 0U;
 }
 
 /* 非阻塞获取 */

@@ -35,7 +35,12 @@ MiniTCB_t * MiniCreateTask(TaskFunction_t pxTaskCode,
 														const char *const pcName,
 														const uint32_t uxStackDepth,
 														unsigned long uxPriority);
-
+/* 任务挂起 */
+MiniRTOS_State Task_Suspend(MiniTCB_t *TCB);
+/* 任务挂起恢复 */
+MiniRTOS_State Task_Resume(MiniTCB_t *TCB);
+/* 任务删除 */
+MiniRTOS_State Task_Delete(MiniTCB_t *TCB);
 
 
 

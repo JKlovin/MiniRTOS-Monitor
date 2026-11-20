@@ -8,24 +8,34 @@
 #include <string.h>
 
 /* 系统定义项 */
-volatile uint32_t MiniRTOS_Running 	= 0;
-volatile uint32_t System_Tick		= 0;
+volatile uint32_t MiniRTOS_Running = 0;
+volatile uint32_t System_Tick = 0;
 MiniTCB_t *volatile CurrentTCB;
 
 /* 就绪列表定义项 */
 List_t Task_ReadyList[UXPRIORITY_MAX];
 
 /* 阻塞列表定义项 */
-List_t Task_WaitList_1	;
-List_t Task_WaitList_2	;
-List_t *CurrentWaitList	;
+List_t Task_WaitList_1;
+List_t Task_WaitList_2;
+List_t *CurrentWaitList;
 List_t *OverflowWaitList;
-List_t Notify_WaitList	;
+List_t Notify_WaitList;
 
-static volatile uint32_t uxCritical_Count	= 0;
-static volatile uint32_t uxSavedPrimask		= 0;
+/* 挂起列表定义项 */
+static List_t Task_SuspendList;
+
+/* 任务待删除链表 */
+static List_t Task_DeleteList;
+
+/* 空闲任务 TCB */
+static MiniTCB_t *IdleTCB = NULL;
+
+static volatile uint32_t uxCritical_Count = 0;
+static volatile uint32_t uxSavedPrimask = 0;
 static void TaskInit_LRerror(void);
 static void IDLE_Handle(void *arg);
+static void Task_ReapDeleted(void);
 
 /* 系统初始化函数 */
 void MiniRTOS_Init(void)
@@ -42,22 +52,30 @@ void MiniRTOS_Init(void)
 
 	CurrentWaitList = &Task_WaitList_1;
 	OverflowWaitList = &Task_WaitList_2;
-	
+
+	/* 挂起链表初始化 */
+	ListInit(&Task_SuspendList);
+
+	/* 待删除链表初始化 */
+	ListInit(&Task_DeleteList);
+
 	/* 任务通知 */
 	ListInit(&Notify_WaitList);
-	
+
 	/* 创建空闲任务 */
-	MiniCreateTask(IDLE_Handle, "Idle_task",64, 0 );
-	
+	IdleTCB = MiniCreateTask(IDLE_Handle, "Idle_task", 64, 0);
 }
 
 /* 空闲任务 */
 static void IDLE_Handle(void *arg)
 {
-  while (1)
-  {
+	while (1)
+	{
+		/* 清理等待删除的任务 */
+		Task_ReapDeleted();
+
 		__WFI();
-  }
+	}
 }
 
 /* 任务创建函数 */
@@ -72,11 +90,11 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 
 	/* 参数检查 */
 	if ((pxTaskCode == NULL) || (uxStackDepth < MIN_STACK_SIZE) ||
-			(uxPriority >= UXPRIORITY_MAX))
+		(uxPriority >= UXPRIORITY_MAX))
 	{
-			return NULL;
+		return NULL;
 	}
-	
+
 	/* 创建TCB，申请TCB内存空间 */
 	TCB = (MiniTCB_t *)malloc(sizeof(MiniTCB_t));
 	if (TCB != NULL)
@@ -159,7 +177,7 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 			TCB->EventListItem.pxContainer = NULL;
 			TCB->EventListItem.pxNext = NULL;
 			TCB->EventListItem.pxPrevious = NULL;
-			
+
 			/* 初始化互斥锁关系 */
 			TCB->pxWaitingMutex = NULL;
 			TCB->pxHeldMutexList = NULL;
@@ -230,14 +248,14 @@ void MiniRTOS_WakeUntil(uint32_t Systick_Now)
 		/* 判断是否正在等待互斥锁 */
 		if (TCB->pxWaitingMutex != NULL)
 		{
-				Mutex_OnWaiterTimeout(TCB);
+			Mutex_OnWaiterTimeout(TCB);
 		}
 		/* 其他普通事件超时 */
 		else if (TCB->EventListItem.pxContainer != NULL)
 		{
-				List_RemoveNode(&TCB->EventListItem);
+			List_RemoveNode(&TCB->EventListItem);
 		}
-		
+
 		/* 从延时链表删除 */
 		List_RemoveNode(&TCB->StateListItem);
 
@@ -267,7 +285,8 @@ void Task_AddReadyList(MiniTCB_t *TCB)
 		TCB->StateListItem.pxPrevious = &Task_ReadyList[TCB->uxPriority].xListEnd;
 
 		Task_ReadyList[TCB->uxPriority].xIndex = &TCB->StateListItem;
-	}else/* 如果列表中有节点，尾插法 */
+	}
+	else /* 如果列表中有节点，尾插法 */
 	{
 		TCB->StateListItem.pxNext = &Task_ReadyList[TCB->uxPriority].xListEnd;
 		TCB->StateListItem.pxPrevious = Task_ReadyList[TCB->uxPriority].xListEnd.pxPrevious;
@@ -291,7 +310,7 @@ void Task_StartScheduler(void)
 	System_Tick = 0;
 
 	Get_CurrentTCB();
-	
+
 	/* 开启第一个任务 */
 	StartFirstTask();
 }
@@ -350,11 +369,11 @@ void Get_CurrentTCB(void)
 void MiniRTOS_delay(uint32_t delay_time)
 {
 	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
-    (__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
+		(__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
 	{
-			return;
+		return;
 	}
-	
+
 	/* 如果延时时间为0，立刻请求任务调度 */
 	if (delay_time == 0U)
 	{
@@ -388,61 +407,61 @@ uint32_t MiniRTOS_GetTick(void)
 }
 
 /* 固定周期任务延时 */
-uint8_t MiniRTOS_DelayUntil(uint32_t *PreviousWakeupTime,uint32_t Delay_Time)
+uint8_t MiniRTOS_DelayUntil(uint32_t *PreviousWakeupTime, uint32_t Delay_Time)
 {
 	uint32_t WakeupTime;
 	uint32_t ElapsedTick;
 	uint32_t CurrentTick;
-	
+
 	/* 参数检查 */
 	if ((PreviousWakeupTime == NULL) || (Delay_Time == 0U))
 	{
-			return 2U;
+		return 2U;
 	}
-	
+
 	/* 只允许运行中的任务调用 */
 	if ((MiniRTOS_Running == 0U) || (__get_IPSR() != 0U) ||
-				(__get_PRIMASK() != 0U) || (CurrentTCB == NULL))
+		(__get_PRIMASK() != 0U) || (CurrentTCB == NULL))
 	{
-			return 2U;
+		return 2U;
 	}
-	
+
 	/* 进入临界区 */
 	Mini_EnterCritical();
-	
+
 	/* 获取当前系统Tick */
 	CurrentTick = MiniRTOS_GetTick();
 
 	/* 计算已经过去的Tick */
-  ElapsedTick = CurrentTick - *PreviousWakeupTime;
-	
+	ElapsedTick = CurrentTick - *PreviousWakeupTime;
+
 	/* 更新下一次计划唤醒时刻 */
 	*PreviousWakeupTime += Delay_Time;
-	
+
 	/* 判断是否错过计划唤醒时刻 */
 	if (ElapsedTick >= Delay_Time)
 	{
-			Mini_ExitCritical();
-			return 1U;
+		Mini_ExitCritical();
+		return 1U;
 	}
-		
-  /* 计算还需要阻塞的Tick */
-  WakeupTime = Delay_Time - ElapsedTick;
-		
+
+	/* 计算还需要阻塞的Tick */
+	WakeupTime = Delay_Time - ElapsedTick;
+
 	/* 当前任务移出就绪链表 */
 	List_RemoveNode(&CurrentTCB->StateListItem);
-	
+
 	/* 加入延时阻塞链表 */
-	Task_AddWaitList(CurrentTCB,WakeupTime);
-	
-	if(MiniRTOS_Running == 1)
+	Task_AddWaitList(CurrentTCB, WakeupTime);
+
+	if (MiniRTOS_Running == 1)
 	{
 		/* 设置 PendSV 挂起标志位,请求任务上下文切换 */
 		SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 	}
-	
+
 	Mini_ExitCritical();
-	
+
 	return 0;
 }
 
@@ -524,9 +543,9 @@ void Mini_ExitCritical(void)
 {
 	if (uxCritical_Count == 0U)
 	{
-			return;
+		return;
 	}
-	
+
 	/* 临界区计数减一 */
 	if (uxCritical_Count > 0)
 	{
@@ -549,15 +568,15 @@ void List_RemoveNode(ListItem_t *Item)
 
 	if (Item == NULL)
 	{
-			return;
+		return;
 	}
 
 	/* 获取节点所属的链表 */
 	List = Item->pxContainer;
-	
+
 	if (List == NULL)
 	{
-			return;
+		return;
 	}
 
 	/* 如果 Index 正好指向待删除节点 */
@@ -579,3 +598,299 @@ void List_RemoveNode(ListItem_t *Item)
 	Item->pxContainer = NULL;
 }
 
+/* 任务挂起 */
+MiniRTOS_State Task_Suspend(MiniTCB_t *TCB)
+{
+	MiniTCB_t *Target;
+	List_t *StateList;
+	uint8_t SelfSuspend;
+
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+		(__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	Mini_EnterCritical();
+
+	/* NULL 表示挂起当前任务 */
+	Target = (TCB == NULL) ? CurrentTCB : TCB;
+
+	/* 不允许挂起 Idle 任务 */
+	if (Target == IdleTCB)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 暂时不允许挂起持有互斥锁的任务 */
+	if (Target->pxHeldMutexList != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 暂时不允许挂起正在等待互斥锁的任务 */
+	if (Target->pxWaitingMutex != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 暂时不允许挂起正在等待事件的任务 */
+	if (Target->EventListItem.pxContainer != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 获取当前任务所在的状态链表 */
+	StateList = Target->StateListItem.pxContainer;
+
+	/* 只允许挂起就绪状态的任务 */
+	if (Target->uxPriority >= UXPRIORITY_MAX ||
+		StateList != &Task_ReadyList[Target->uxPriority])
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 判断是否挂起自己 */
+	SelfSuspend = (Target == CurrentTCB) ? 1U : 0U;
+
+	/* 从就绪链表移除 */
+	List_RemoveNode(&Target->StateListItem);
+
+	/* 设置挂起链表节点信息 */
+	Target->StateListItem.pxValue = 0U;
+	Target->StateListItem.pxOwner = Target;
+
+	/* 尾插法 */
+	Target->StateListItem.pxNext = &Task_SuspendList.xListEnd;
+	Target->StateListItem.pxPrevious = Task_SuspendList.xListEnd.pxPrevious;
+
+	Task_SuspendList.xListEnd.pxPrevious->pxNext = &Target->StateListItem;
+	Task_SuspendList.xListEnd.pxPrevious = &Target->StateListItem;
+
+	Target->StateListItem.pxContainer = &Task_SuspendList;
+	Task_SuspendList.NumberOfItems++;
+
+	/* 挂起当前运行任务，必须切换 */
+	if (SelfSuspend != 0U)
+	{
+		SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCritical();
+
+	return MiniRTOS_OK;
+}
+
+/* 任务挂起恢复 */
+MiniRTOS_State Task_Resume(MiniTCB_t *TCB)
+{
+	if (TCB == NULL)
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	if ((MiniRTOS_Running == 0U) ||
+		(CurrentTCB == NULL) ||
+		(__get_IPSR() != 0U) ||
+		(__get_PRIMASK() != 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	Mini_EnterCritical();
+
+	/* 检查任务是否处于挂起链表 */
+	if (TCB->StateListItem.pxContainer != &Task_SuspendList)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 检查 */
+	if ((TCB->uxPriority >= UXPRIORITY_MAX) ||
+		(TCB->EventListItem.pxContainer != NULL) ||
+		(TCB->pxWaitingMutex != NULL))
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 从挂起链表移除 */
+	List_RemoveNode(&TCB->StateListItem);
+
+	/* 加入对应优先级就绪链表 */
+	Task_AddReadyList(TCB);
+
+	/* 恢复的任务优先级更高，请求调度 */
+	if (TCB->uxPriority > CurrentTCB->uxPriority)
+	{
+		SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCritical();
+
+	return MiniRTOS_OK;
+}
+
+/* 任务删除 */
+MiniRTOS_State Task_Delete(MiniTCB_t *TCB)
+{
+	MiniTCB_t *Target;
+	List_t *StateList;
+	uint8_t SelfDelete;
+
+	if ((MiniRTOS_Running == 0U) ||
+		(CurrentTCB == NULL) ||
+		(__get_IPSR() != 0U) ||
+		(__get_PRIMASK() != 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	Mini_EnterCritical();
+
+	/* NULL 表示删除当前任务 */
+	Target = (TCB == NULL) ? CurrentTCB : TCB;
+
+	/* 禁止删除 Idle 任务 */
+	if (Target == IdleTCB)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 不能删除持有互斥锁的任务 */
+	if (Target->pxHeldMutexList != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 不能删除正在等待互斥锁的任务 */
+	if (Target->pxWaitingMutex != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 暂不支持删除正在等待事件的任务 */
+	if (Target->EventListItem.pxContainer != NULL)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 获取任务当前的状态链表 */
+	StateList = Target->StateListItem.pxContainer;
+
+	/* 检查任务优先级 */
+	if (Target->uxPriority >= UXPRIORITY_MAX)
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 只允许删除就绪任务或挂起任务 */
+	if ((StateList != &Task_ReadyList[Target->uxPriority]) &&
+		(StateList != &Task_SuspendList))
+	{
+		Mini_ExitCritical();
+		return MiniRTOS_Error;
+	}
+
+	/* 判断是否删除自己 */
+	SelfDelete = (Target == CurrentTCB) ? 1U : 0U;
+
+	/* 从原来的状态链表中移除 */
+	List_RemoveNode(&Target->StateListItem);
+
+	/* 设置删除链表节点 */
+	Target->StateListItem.pxValue = 0U;
+	Target->StateListItem.pxOwner = Target;
+
+	/* 插入待删除链表 */
+	Target->StateListItem.pxNext = &Task_DeleteList.xListEnd;
+	Target->StateListItem.pxPrevious = Task_DeleteList.xListEnd.pxPrevious;
+
+	Task_DeleteList.xListEnd.pxPrevious->pxNext = &Target->StateListItem;
+	Task_DeleteList.xListEnd.pxPrevious = &Target->StateListItem;
+
+	Target->StateListItem.pxContainer = &Task_DeleteList;
+	Task_DeleteList.NumberOfItems++;
+
+	/* 当前任务自删除必须立即请求切换 */
+	if (SelfDelete != 0U)
+	{
+		SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCritical();
+
+	/*
+	 * 自删除后不能返回任务的正常业务流程。
+	 * PendSV 会切换到其他就绪任务。
+	 */
+	if (SelfDelete != 0U)
+	{
+		for (;;)
+		{
+			__NOP();
+		}
+	}
+
+	return MiniRTOS_OK;
+}
+
+/* 回收已经删除的任务 */
+static void Task_ReapDeleted(void)
+{
+	MiniTCB_t *TCB;
+	ListItem_t *Item;
+
+	while (1)
+	{
+		/* 进入临界区 */
+		Mini_EnterCritical();
+
+		/* 没有等待回收的任务 */
+		if (Task_DeleteList.NumberOfItems == 0U)
+		{
+			Mini_ExitCritical();
+			break;
+		}
+
+		/* 取出删除链表第一个任务 */
+		Item = Task_DeleteList.xListEnd.pxNext;
+
+		TCB = (MiniTCB_t *)Item->pxOwner;
+
+		/* 从删除链表中移除 */
+		List_RemoveNode(Item);
+
+		/* 退出临界区 */
+		Mini_ExitCritical();
+
+		/*
+		 * 此时任务已经不再参与调度。
+		 * Idle 正在使用自己的 PSP 栈，
+		 * 可以安全释放目标任务的内存。
+		 */
+
+		/* 释放任务栈 */
+		free(TCB->pxStackBase);
+
+		/* 释放任务控制块 */
+		free(TCB);
+	}
+}
