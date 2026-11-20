@@ -183,12 +183,12 @@ MiniTCB_t *MiniCreateTask(TaskFunction_t pxTaskCode,
 			TCB->pxHeldMutexList = NULL;
 			TCB->uxEventWaitOrder = 0ULL;
 
-			/* 加入就绪列表 */
-			Task_AddReadyList(TCB);
-
 			/* 任务通知值初始化 */
 			TCB->NotifyValue = 0U;
 			TCB->NotifyState = Notify_Idle;
+			
+			/* 加入就绪列表 */
+			Task_AddReadyList(TCB);
 
 			printf("%s Task Init sucess\r\n", pcName);
 
@@ -368,6 +368,8 @@ void Get_CurrentTCB(void)
 /* RTOS系统延时函数 */
 void MiniRTOS_delay(uint32_t delay_time)
 {
+	/* __get_IPSR() != 0U 表示处理器处于异常或中断上下文*/
+	/* __get_PRIMASK() != 0U 表示处理器屏蔽中断*/
 	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
 		(__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
 	{
@@ -538,6 +540,21 @@ void Mini_EnterCritical(void)
 	uxCritical_Count++;
 }
 
+/* 进入临界区 */
+uint32_t Mini_EnterCriticalFromISR(void)
+{
+	uint32_t SavedMask;
+
+	/* 保存原有 PRIMASK 状态 */
+	SavedMask = __get_PRIMASK();
+
+	/* 屏蔽可配置优先级异常 */
+	__disable_irq();
+
+	/* 返回进入之前的中断屏蔽状态 */
+	return SavedMask;
+}
+
 /* 退出临界区 */
 void Mini_ExitCritical(void)
 {
@@ -559,6 +576,19 @@ void Mini_ExitCritical(void)
 		__set_PRIMASK(uxSavedPrimask);
 		__ISB();
 	}
+}
+
+/* 退出临界区 */
+void Mini_ExitCriticalFromISR(uint32_t SavedMask)
+{
+	/* 确保前面的内存访问完成 */
+	__DSB();
+
+	/* 恢复进入前的 PRIMASK 状态 */
+	__set_PRIMASK(SavedMask);
+
+	/* 指令同步 */
+	__ISB();
 }
 
 /* 将任务体移除当前链表 */
@@ -737,6 +767,59 @@ MiniRTOS_State Task_Resume(MiniTCB_t *TCB)
 
 	/* 退出临界区 */
 	Mini_ExitCritical();
+
+	return MiniRTOS_OK;
+}
+
+/* 任务挂起恢复 */
+MiniRTOS_State Task_ResumeFromISR(MiniTCB_t *TCB, uint8_t *pxHigherPriorityTaskWoken)
+{
+	uint32_t SavedMask;
+
+	if ((TCB == NULL) || (pxHigherPriorityTaskWoken == NULL))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+		(__get_IPSR() < 16U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	SavedMask = Mini_EnterCriticalFromISR();
+
+	/* 检查任务是否处于挂起链表 */
+	if (TCB->StateListItem.pxContainer != &Task_SuspendList)
+	{
+		Mini_ExitCriticalFromISR(SavedMask);
+		return MiniRTOS_Error;
+	}
+
+	/* 检查 */
+	if ((TCB->uxPriority >= UXPRIORITY_MAX) ||
+		(TCB->EventListItem.pxContainer != NULL) ||
+		(TCB->pxWaitingMutex != NULL))
+	{
+		Mini_ExitCriticalFromISR(SavedMask);
+		return MiniRTOS_Error;
+	}
+
+	/* 从挂起链表移除 */
+	List_RemoveNode(&TCB->StateListItem);
+
+	/* 加入对应优先级就绪链表 */
+	Task_AddReadyList(TCB);
+
+	/* 恢复的任务优先级更高，请求调度 */
+	if (TCB->uxPriority > CurrentTCB->uxPriority)
+	{
+		*pxHigherPriorityTaskWoken = 1U;
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCriticalFromISR(SavedMask);
 
 	return MiniRTOS_OK;
 }

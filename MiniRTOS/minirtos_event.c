@@ -642,18 +642,51 @@ MiniRTOS_State Semaphore_TakeTimeout(MiniSemaphore_t *Semaphore, uint32_t WaitTi
 	}
 }
 
-/* 释放信号量 */
-MiniRTOS_State Semaphore_Give(MiniSemaphore_t *Semaphore)
+MiniRTOS_State Semaphore_TakeFromISR(MiniSemaphore_t *Semaphore)
 {
-	MiniTCB_t *TCB;
+	uint32_t SavedMask;
 
-	/* 参数检查 */
 	if ((Semaphore == NULL) || (Semaphore->uxMaxCount == 0U))
 	{
 		return MiniRTOS_Invalid;
 	}
 
-	/* 只允许调度器运行后的任务上下文调用 */
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+		(__get_IPSR() == 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	SavedMask = Mini_EnterCriticalFromISR();
+
+	/* 信号量不可用 */
+	if (Semaphore->uxCount == 0U)
+	{
+		/* 退出临界区 */
+		Mini_ExitCriticalFromISR(SavedMask);
+		return MiniRTOS_Timeout;
+	}
+
+	/* 信号量计数减一 */
+	Semaphore->uxCount--;
+
+	/* 恢复原有中断屏蔽状态 */
+	Mini_ExitCriticalFromISR(SavedMask);
+
+	return MiniRTOS_OK;
+}
+
+/* 释放信号量 */
+MiniRTOS_State Semaphore_Give(MiniSemaphore_t *Semaphore)
+{
+	MiniTCB_t *TCB;
+
+	if ((Semaphore == NULL) || (Semaphore->uxMaxCount == 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
 	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
 		(__get_IPSR() != 0U) || (__get_PRIMASK() != 0U))
 	{
@@ -693,6 +726,55 @@ MiniRTOS_State Semaphore_Give(MiniSemaphore_t *Semaphore)
 
 	/* 退出临界区 */
 	Mini_ExitCritical();
+
+	return MiniRTOS_OK;
+}
+
+/* 释放信号量 */
+MiniRTOS_State Semaphore_GiveFromISR(MiniSemaphore_t *Semaphore, uint8_t *pxHigherPriorityTaskWoken)
+{
+	MiniTCB_t *WakeTCB;
+	uint32_t SavedMask;
+
+	if ((Semaphore == NULL) || (pxHigherPriorityTaskWoken == NULL) ||
+		(Semaphore->uxMaxCount == 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+		(__get_IPSR() == 0U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	SavedMask = Mini_EnterCriticalFromISR();
+
+	/* 信号量计数已满 */
+	if (Semaphore->uxCount >= Semaphore->uxMaxCount)
+	{
+		Mini_ExitCriticalFromISR(SavedMask);
+		return MiniRTOS_Error;
+	}
+
+	/* 信号量计数加一 */
+	Semaphore->uxCount++;
+
+	/* 唤醒一个正在等待的任务 */
+	WakeTCB = Mini_EventWakeup(&Semaphore->WaitList);
+
+	/* 判断是否需要立刻调度 */
+	if (WakeTCB != NULL)
+	{
+		if (WakeTCB->uxPriority > CurrentTCB->uxPriority)
+		{
+			*pxHigherPriorityTaskWoken = 1U;
+		}
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCriticalFromISR(SavedMask);
 
 	return MiniRTOS_OK;
 }
@@ -762,6 +844,58 @@ MiniRTOS_State TaskNotify_Send(MiniTCB_t *TCB, uint32_t Value)
 
 	/* 退出临界区 */
 	Mini_ExitCritical();
+
+	return MiniRTOS_OK;
+}
+
+MiniRTOS_State TaskNotify_SendFromISR(MiniTCB_t *TCB, uint32_t Value, uint8_t *pxHigherPriorityTaskWoken)
+{
+	uint32_t SavedMask;
+
+	if ((TCB == NULL) || (pxHigherPriorityTaskWoken == NULL))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	if ((MiniRTOS_Running == 0U) || (CurrentTCB == NULL) ||
+		(__get_IPSR() < 16U))
+	{
+		return MiniRTOS_Invalid;
+	}
+
+	/* 进入临界区 */
+	SavedMask = Mini_EnterCriticalFromISR();
+
+	/* 设置任务通知值 */
+	TCB->NotifyValue = Value;
+
+	/* 设置通知为待接收状态 */
+	TCB->NotifyState = Notify_Ready;
+
+	if (TCB->EventListItem.pxContainer == &Notify_WaitList)
+	{
+		/* 从通知事件等待链表中移除 */
+		List_RemoveNode(&TCB->EventListItem);
+
+		/* 如果同时在系统时间阻塞链表中，解除超时等待 */
+		if ((TCB->StateListItem.pxContainer == CurrentWaitList) ||
+			(TCB->StateListItem.pxContainer == OverflowWaitList))
+		{
+			List_RemoveNode(&TCB->StateListItem);
+		}
+
+		/* 将目标任务恢复到就绪链表 */
+		Task_AddReadyList(TCB);
+
+		/* 判断是否需要立刻调度 */
+		if ((TCB->uxPriority > CurrentTCB->uxPriority))
+		{
+			*pxHigherPriorityTaskWoken = 1U;
+		}
+	}
+
+	/* 退出临界区 */
+	Mini_ExitCriticalFromISR(SavedMask);
 
 	return MiniRTOS_OK;
 }

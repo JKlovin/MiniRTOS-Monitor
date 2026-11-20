@@ -58,6 +58,24 @@ uint8_t Semaphore_TryTake(MiniSemaphore_t *Semaphore);
 /* 释放信号量 */
 MiniRTOS_State Semaphore_Give(MiniSemaphore_t *Semaphore);
 
+/*-------------------------------------------------------------------------------*/
+/*-----------------------------------中断--------------------------------------*/
+/*-------------------------------------------------------------------------------*/
+
+/*-----------------------------------*/
+/*-------------信号量----------------*/
+/*-----------------------------------*/
+
+/* 释放信号量 */
+MiniRTOS_State Semaphore_GiveFromISR(MiniSemaphore_t *Semaphore,uint8_t *pxHigherPriorityTaskWoken);
+/* 获取信号量 */
+MiniRTOS_State Semaphore_TakeFromISR(MiniSemaphore_t *Semaphore);
+
+/*-----------------------------------*/
+/*-------------任务通知--------------*/
+/*-----------------------------------*/
+MiniRTOS_State TaskNotify_SendFromISR(MiniTCB_t *TCB,uint32_t Value,uint8_t *pxHigherPriorityTaskWoken);
+
 
 
 

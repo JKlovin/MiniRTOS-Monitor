@@ -32,7 +32,14 @@ uint8_t Queue_Receive(MiniQueue_t *MiniQueue, void *Data);
 /* 非阻塞队列接收 */
 uint8_t Queue_TryReceive(MiniQueue_t *MiniQueue, void *Data);
 
+/*-------------------------------------------------------------------------------*/
+/*-----------------------------------中断--------------------------------------*/
+/*-------------------------------------------------------------------------------*/
 
+/* 队列发送 */
+MiniRTOS_State Queue_SendFromISR(MiniQueue_t *MiniQueue,const void *Data,uint8_t *pxHigherPriorityTaskWoken);
+/* 队列接收 */
+MiniRTOS_State Queue_ReceiveFromISR(MiniQueue_t *MiniQueue,void *Data,uint8_t *pxHigherPriorityTaskWoken);
 
 
 

@@ -41,8 +41,17 @@ MiniRTOS_State Task_Suspend(MiniTCB_t *TCB);
 MiniRTOS_State Task_Resume(MiniTCB_t *TCB);
 /* 任务删除 */
 MiniRTOS_State Task_Delete(MiniTCB_t *TCB);
-
-
+														
+														
+/*-------------------------------------------------------------------------------*/
+/*-----------------------------------中断--------------------------------------*/
+/*-------------------------------------------------------------------------------*/
+/* 进入临界区 */
+uint32_t Mini_EnterCriticalFromISR(void);
+/* 退出临界区 */
+void Mini_ExitCriticalFromISR(uint32_t SavedMask);
+/* 任务挂起恢复 */												
+MiniRTOS_State Task_ResumeFromISR(MiniTCB_t *TCB,uint8_t *pxHigherPriorityTaskWoken);
 
 
 #endif
